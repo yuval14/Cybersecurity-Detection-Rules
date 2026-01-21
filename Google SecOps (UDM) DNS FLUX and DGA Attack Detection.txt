@@ -1,0 +1,392 @@
+========================================
+Google SecOps (UDM) – DNS FLUX DETECTIONS
+YARA-L 2.0 Rules + MITRE ATT&CK Mapping
+========================================
+
+Notes:
+- UDM DNS fields used here: network.dns.questions.name/type, network.dns.answers.data/ttl/type,
+  network.dns.authority.data/ttl/type, network.dns.additional.data/ttl/type. :contentReference[oaicite:5]{index=5}
+- MITRE mapping: add meta key technique="Txxxx" (comma-separated supported). :contentReference[oaicite:6]{index=6}
+
+
+------------------------------------------------------------
+Rule 1 – Fast Flux DNS (many distinct A/AAAA answers, low TTL)
+MITRE: T1568.001 (Fast Flux DNS)
+------------------------------------------------------------
+
+rule gso_dns_fast_flux_many_ips_low_ttl
+{
+  meta:
+    author = "SOC"
+    description = "Fast Flux DNS: high churn of A/AAAA answers with low TTL for the same queried domain"
+    severity = "High"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.001"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    // Group by the queried name (question)
+    $qname = $e.network.dns.questions.name
+
+    // A (1) or AAAA (28) answers with low TTL
+    ($e.network.dns.answers.type = 1 or $e.network.dns.answers.type = 28)
+    $ip = $e.network.dns.answers.data
+    $e.network.dns.answers.ttl <= 300
+
+  match:
+    $qname over 15m
+
+  condition:
+    $e and #ip >= 12
+}
+
+
+------------------------------------------------------------------
+Rule 2 – Double Flux (A/AAAA churn + authoritative NS churn, low TTL)
+MITRE: T1568.001 (Fast Flux DNS; includes double-flux behavior)
+------------------------------------------------------------------
+
+rule gso_dns_double_flux_ip_and_authoritative_ns_churn
+{
+  meta:
+    author = "SOC"
+    description = "Double Flux: A/AAAA churn plus churn of authoritative NS (authority section) with low NS TTL"
+    severity = "Critical"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.001"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    $qname = $e.network.dns.questions.name
+
+    // A/AAAA answers observed
+    ($e.network.dns.answers.type = 1 or $e.network.dns.answers.type = 28)
+    $ip = $e.network.dns.answers.data
+
+    // NS records (type 2) from authority section with low TTL
+    $e.network.dns.authority.type = 2
+    $ns = $e.network.dns.authority.data
+    $e.network.dns.authority.ttl <= 600
+
+  match:
+    $qname over 1h
+
+  condition:
+    $e and #ip >= 20 and #ns >= 4
+}
+
+
+------------------------------------------------------------
+Rule 3 – Double Flux (NS churn observed in additional section)
+MITRE: T1568.001
+------------------------------------------------------------
+
+rule gso_dns_double_flux_ip_and_ns_churn_additional_section
+{
+  meta:
+    author = "SOC"
+    description = "Double Flux variant: A/AAAA churn plus NS churn in additional section (some sensors log NS here)"
+    severity = "Critical"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.001"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    $qname = $e.network.dns.questions.name
+
+    ($e.network.dns.answers.type = 1 or $e.network.dns.answers.type = 28)
+    $ip = $e.network.dns.answers.data
+
+    $e.network.dns.additional.type = 2
+    $ns = $e.network.dns.additional.data
+    $e.network.dns.additional.ttl <= 600
+
+  match:
+    $qname over 1h
+
+  condition:
+    $e and #ip >= 20 and #ns >= 4
+}
+
+
+-------------------------------------------------------------------
+Rule 4 – Suspicious NS Hostname Patterns (heuristic “entropy-ish”)
+MITRE: T1568.001 (supporting signal)
+-------------------------------------------------------------------
+
+rule gso_dns_suspicious_ns_hostname_patterns
+{
+  meta:
+    author = "SOC"
+    description = "Heuristic: suspicious / algorithmic-looking authoritative NS hostnames (pattern-based). Use as a booster signal."
+    severity = "Medium"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.001"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    // Authority NS
+    $e.network.dns.authority.type = 2
+    $ns = $e.network.dns.authority.data
+
+    // Pattern heuristics (tune to reduce noise)
+    (
+      // Long alnum label (>=18)
+      re.regex($ns, `(^|\\.)[a-z0-9]{18,}(\\.|$)`) nocase or
+      // Many digits in label (>=6 digits)
+      re.regex($ns, `(^|\\.)[a-z]*[0-9]{6,}[a-z0-9]*(\\.|$)`) nocase or
+      // Random-ish label before TLD
+      re.regex($ns, `(^|\\.)[a-z0-9]{10,}\\.[a-z]{2,}$`) nocase
+    )
+
+  match:
+    $ns over 6h
+
+  condition:
+    $e and #ns >= 5
+}
+
+
+-----------------------------------------------------------------------
+Rule 5 – DNS “Beaconing” behavior: same client repeatedly queries domain
+and receives rotating A/AAAA answers (flux-style C2 resilience)
+MITRE: T1071.004 (DNS) + T1568.001
+-----------------------------------------------------------------------
+
+rule gso_dns_beaconing_same_client_rotating_ips
+{
+  meta:
+    author = "SOC"
+    description = "Potential C2: same client repeatedly queries a domain while A/AAAA answers rotate and TTL stays low"
+    severity = "High"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1071.004,T1568.001"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    // Client source IP (commonly populated in UDM)
+    $client_ip = $e.principal.ip
+
+    $qname = $e.network.dns.questions.name
+
+    ($e.network.dns.answers.type = 1 or $e.network.dns.answers.type = 28)
+    $ip = $e.network.dns.answers.data
+    $e.network.dns.answers.ttl <= 600
+
+  match:
+    $client_ip, $qname over 30m
+
+  condition:
+    $e and #e >= 25 and #ip >= 10
+}
+
+
+--------------------------------------------------------------------------------
+Optional Rule 6 – Allowlist by domain (recommended in Google SecOps deployments)
+This replaces the earlier "ASN allowlist" idea, because ASN is not consistently
+present on DNS answer records in core UDM fields.
+MITRE: T1568.001
+--------------------------------------------------------------------------------
+
+rule gso_dns_fast_flux_with_domain_allowlist_exclusions
+{
+  meta:
+    author = "SOC"
+    description = "Fast Flux DNS with example domain allowlist exclusions (tune for your org to reduce CDN false positives)"
+    severity = "High"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.001"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    $qname = $e.network.dns.questions.name
+
+    // A/AAAA answers, low TTL
+    ($e.network.dns.answers.type = 1 or $e.network.dns.answers.type = 28)
+    $ip = $e.network.dns.answers.data
+    $e.network.dns.answers.ttl <= 300
+
+    // Example exclusions (replace with your own allowlist / enterprise SaaS domains)
+    not re.regex($qname, `(\\.googleapis\\.com|\\.gstatic\\.com|\\.google\\.com)$`) nocase
+    not re.regex($qname, `(\\.cloudfront\\.net|\\.akamai(net)?\\.net|\\.akamaized\\.net)$`) nocase
+    not re.regex($qname, `(\\.azureedge\\.net|\\.windows\\.net)$`) nocase
+
+  match:
+    $qname over 15m
+
+  condition:
+    $e and #ip >= 12
+}
+
+
+------------------------------------------------------------
+Rule 7 – DGA: High NXDOMAIN rate per client (burst)
+MITRE: T1568.002 (+ optional T1071.004)
+------------------------------------------------------------
+
+rule gso_dns_dga_high_nxdomain_rate_per_client
+{
+  meta:
+    author = "SOC"
+    description = "DGA signal: same client produces many distinct NXDOMAIN queries in a short window"
+    severity = "High"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.002,T1071.004"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    $client_ip = $e.principal.ip
+    $qname = $e.network.dns.questions.name
+
+    // NXDOMAIN = RCODE 3
+    $e.network.dns.response_code = 3
+
+    // Reduce noise: ignore common short/normal domains
+    re.regex($qname, `^[a-z0-9\\-\\.]{12,}$`) nocase
+
+  match:
+    $client_ip over 10m
+
+  condition:
+    $e and #qname >= 50
+}
+
+
+------------------------------------------------------------
+Rule 8 – DGA: Many unique queried domains per client (with NXDOMAIN)
+MITRE: T1568.002
+------------------------------------------------------------
+
+rule gso_dns_dga_many_unique_domains_with_nxdomain
+{
+  meta:
+    author = "SOC"
+    description = "DGA signal: a client queries many unique domains, most failing NXDOMAIN, indicative of algorithmic generation"
+    severity = "High"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.002"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    $client_ip = $e.principal.ip
+    $qname = $e.network.dns.questions.name
+
+    $e.network.dns.response_code = 3
+
+    // Basic structure: at least one dot, avoids single-label noise
+    re.regex($qname, `^[a-z0-9\\-]{3,}(\\.[a-z0-9\\-]{2,})+\\.[a-z]{2,}$`) nocase
+
+  match:
+    $client_ip over 30m
+
+  condition:
+    $e and #qname >= 200
+}
+
+
+------------------------------------------------------------
+Rule 9 – DGA: “Gibberish” second-level label pattern (heuristic)
+MITRE: T1568.002
+------------------------------------------------------------
+
+rule gso_dns_dga_gibberish_label_heuristic
+{
+  meta:
+    author = "SOC"
+    description = "DGA heuristic: long, consonant-heavy or digit-heavy SLD label + NXDOMAIN (pattern-based)"
+    severity = "Medium"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.002"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    $client_ip = $e.principal.ip
+    $qname = $e.network.dns.questions.name
+
+    $e.network.dns.response_code = 3
+
+    // Heuristics (tune):
+    // 1) very long label before TLD
+    // 2) label contains many digits
+    // 3) consonant-heavy runs (reduces dictionary-word DGAs but catches many classic ones)
+    (
+      re.regex($qname, `(^|\\.)[a-z0-9]{16,}\\.[a-z]{2,}$`) nocase or
+      re.regex($qname, `(^|\\.)[a-z]*[0-9]{6,}[a-z0-9]*\\.[a-z]{2,}$`) nocase or
+      re.regex($qname, `(^|\\.)[bcdfghjklmnpqrstvwxyz]{10,}\\.[a-z]{2,}$`) nocase
+    )
+
+  match:
+    $client_ip over 1h
+
+  condition:
+    $e and #qname >= 30
+}
+
+
+------------------------------------------------------------
+Rule 10 – DGA (wordlist-style): many unique domains, mostly NXDOMAIN
+(no “gibberish” requirement)
+MITRE: T1568.002
+------------------------------------------------------------
+
+rule gso_dns_dga_wordlist_style_high_volume_nxdomain
+{
+  meta:
+    author = "SOC"
+    description = "DGA signal for wordlist-based DGAs: high unique domain volume returning NXDOMAIN (does not rely on gibberish patterns)"
+    severity = "High"
+    yara_version = "YL2.0"
+    rule_version = "1.0"
+    technique = "T1568.002,T1071.004"
+
+  events:
+    $e.metadata.event_type = "NETWORK_DNS"
+    $e.network.dns.response = true
+
+    $client_ip = $e.principal.ip
+    $qname = $e.network.dns.questions.name
+
+    $e.network.dns.response_code = 3
+
+    // exclude obvious internal/search suffixes (customize)
+    not re.regex($qname, `(\\.local|\\.lan)$`) nocase
+
+  match:
+    $client_ip over 2h
+
+  condition:
+    $e and #qname >= 600
+}
+
+
+
+========================================
+END OF FILE
+========================================
