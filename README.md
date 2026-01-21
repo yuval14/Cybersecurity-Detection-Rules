@@ -3,71 +3,83 @@ Cyber Detection Rules
 
 ---
 
+
 ## 🧠 Detection Philosophy
 
-- **Behavior over indicators** – avoid static IOCs where possible  
-- **Threat-informed** – aligned with adversary TTPs  
-- **Context-aware** – leverage enrichment and correlation  
-- **Defender-centric** – written for SOC, DFIR, and Threat Intel teams  
+- **Behavior over indicators**  
+- **Threat-informed**, aligned with adversary TTPs  
+- **Context-aware**, leveraging correlation and enrichment  
+- **Defender-centric**, written for operational security teams  
 
 Where applicable, detections include:
-- MITRE ATT&CK mappings
-- Tuning recommendations
-- Optional enhancement logic
-- Known evasion considerations
+- MITRE ATT&CK mappings  
+- Tuning guidance  
+- Known evasion considerations  
 
 ---
 
 ## 🧪 Rule Quality Standards
 
-Each detection rule should clearly specify:
+Each detection rule should document:
 
-- **Purpose** – what behavior is being detected  
-- **Data sources required** – DNS logs, EDR, proxy, auth logs, etc.  
-- **Detection logic** – query or rule logic  
-- **Expected false positives** – and how to reduce them  
-- **Severity & confidence** – recommended triage priority  
+- Detection purpose  
+- Required data sources  
+- Detection logic  
+- Expected false positives and tuning notes  
+- Suggested severity and confidence level  
 
 ---
 
-## ⚙️ Supported Platforms (Non-Exhaustive)
+## ⚙️ Supported Platforms & Formats
 
-- YARA / YARA-L / YARA-L 2.0  
-- Splunk SPL  
-- Elastic (KQL)  
-- Microsoft Sentinel (KQL)  
+- **YARA / YARA-L / YARA-L 2.0**  
+- **Sigma** (generic, SIEM-agnostic format)  
+- **Splunk SPL**  
+- **Elastic (KQL)**  
+- **Microsoft Sentinel (KQL)**  
+- **IBM QRadar (AQL)**  
 - Network telemetry (DNS, proxy, NetFlow)
 
----
-
-## 🚨 Disclaimer
-
-These detection rules are provided **as-is** for research and defensive purposes.
-
-- They may require tuning for your environment  
-- Not all detections are production-ready by default  
-- No guarantee is provided regarding completeness or accuracy  
-
-Always validate detections in a test environment before deployment.
-
----
-
-## 🤝 Contributions
-
-Contributions are welcome and encouraged.
-
-When submitting new rules:
-- Follow the existing structure
-- Document assumptions and limitations
-- Avoid environment-specific hardcoding
-- Include ATT&CK mappings where relevant
+Sigma rules may be used as the **authoritative source**, with platform-specific rules derived from them where applicable.
 
 ---
 
 ## 📄 License
 
-Specify your chosen license here (e.g., MIT, Apache 2.0, GPL).
-Ensure compatibility with your organization’s legal and compliance requirements.
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)**.
+
+By using, modifying, or distributing this software, you agree to the following key terms:
+
+- You may use the software for any purpose, including commercial use  
+- If you distribute modified versions, you **must** make the source code available  
+- Derivative works **must** be licensed under GPL-3.0  
+- You may not impose additional legal or technical restrictions  
+
+See the `LICENSE` file for the full license text.
+
+---
+
+## 🚨 Disclaimer
+
+This repository is provided **as-is** for defensive and research purposes.
+
+- Rules may require environment-specific tuning  
+- Not all detections are production-ready by default  
+- No warranty is provided, express or implied  
+
+---
+
+## 🤝 Contributions
+
+Contributions are welcome.
+
+By submitting a contribution, you agree that your work will be licensed under **GPL-3.0**, consistent with this project.
+
+Please:
+- Follow the repository structure  
+- Document assumptions and limitations  
+- Avoid environment-specific hardcoding  
+- Include MITRE ATT&CK mappings where relevant  
 
 ---
 
@@ -81,4 +93,4 @@ Ensure compatibility with your organization’s legal and compliance requirement
 
 ---
 
-**Detection is not about blocking everything — it’s about understandin**
+**Open, shareable detection logic strengthens collective defense — GPL ensures it stays that way.**
