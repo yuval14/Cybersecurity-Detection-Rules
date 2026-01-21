@@ -1,0 +1,145 @@
+============================================================
+SPLUNK DNS DETECTIONS – FAST FLUX, DOUBLE FLUX & DGA
+10 SPL Detection Searches (CIM-Friendly)
+============================================================
+
+Assumed common fields:
+- src            : client/source IP
+- query          : queried domain (qname)
+- answer         : DNS answer (RDATA)
+- record_type    : A, AAAA, NS, etc.
+- ttl            : TTL value
+- reply_code     : NOERROR / NXDOMAIN
+- response_code  : numeric DNS RCODE (3 = NXDOMAIN)
+
+Adjust field names as needed per data source.
+
+
+------------------------------------------------------------
+1) FAST FLUX – Many IPs, Low TTL (15 minutes)
+------------------------------------------------------------
+index=dns* (record_type=A OR record_type=AAAA) reply_code=NOERROR
+| eval ttl_num=tonumber(ttl)
+| where ttl_num<=300
+| bin _time span=15m
+| stats dc(answer) as distinct_ips values(answer) as sample_ips min(ttl_num) as min_ttl by _time query
+| where distinct_ips>=12
+
+
+------------------------------------------------------------
+2) DOUBLE FLUX – IP Churn + NS Churn (Authority Section)
+------------------------------------------------------------
+index=dns* reply_code=NOERROR
+| eval ttl_num=tonumber(ttl)
+| eval ip_answer=if(record_type="A" OR record_type="AAAA", answer, null())
+| eval ns_answer=if(record_type="NS", answer, null())
+| bin _time span=1h
+| stats dc(ip_answer) as distinct_ips dc(ns_answer) as distinct_ns
+        min(eval(if(record_type="NS", ttl_num, null()))) as min_ns_ttl
+        values(ns_answer) as sample_ns by _time query
+| where distinct_ips>=20 AND distinct_ns>=4 AND min_ns_ttl<=600
+
+
+------------------------------------------------------------
+3) DOUBLE FLUX – NS in Additional Section (Fallback)
+------------------------------------------------------------
+index=dns* reply_code=NOERROR
+| eval ttl_num=tonumber(ttl)
+| eval ip_answer=if(record_type="A" OR record_type="AAAA", answer, null())
+| eval ns_answer=if(record_type="NS", answer, null())
+| bin _time span=1h
+| stats dc(ip_answer) as distinct_ips dc(ns_answer) as distinct_ns
+        min(eval(if(record_type="NS", ttl_num, null()))) as min_ns_ttl by _time query
+| where distinct_ips>=20 AND distinct_ns>=4 AND min_ns_ttl<=600
+
+
+------------------------------------------------------------
+4) SUSPICIOUS / HIGH-ENTROPY NS HOSTNAMES
+------------------------------------------------------------
+index=dns* record_type=NS reply_code=NOERROR
+| bin _time span=6h
+| stats dc(answer) as distinct_ns values(answer) as sample_ns by _time query
+| where distinct_ns>=5
+| mvexpand sample_ns
+| where match(sample_ns,"(^|\\.)[a-z0-9]{18,}(\\.|$)")
+   OR match(sample_ns,"(^|\\.)[a-z]*[0-9]{6,}[a-z0-9]*(\\.|$)")
+   OR match(sample_ns,"(^|\\.)[a-z0-9]{10,}\\.[a-z]{2,}$")
+| stats values(sample_ns) as suspicious_ns by _time query
+
+
+------------------------------------------------------------
+5) DNS BEACONING – Same Client, Same Domain, Rotating IPs
+------------------------------------------------------------
+index=dns* (record_type=A OR record_type=AAAA) reply_code=NOERROR
+| eval ttl_num=tonumber(ttl)
+| where ttl_num<=600
+| bin _time span=30m
+| stats count as query_count dc(answer) as distinct_ips
+        min(ttl_num) as min_ttl values(answer) as sample_ips
+        by _time src query
+| where query_count>=25 AND distinct_ips>=10 AND min_ttl<=600
+
+
+------------------------------------------------------------
+6) FAST FLUX – With Domain Allowlist Exclusions
+------------------------------------------------------------
+index=dns* (record_type=A OR record_type=AAAA) reply_code=NOERROR
+| eval ttl_num=tonumber(ttl)
+| where ttl_num<=300
+| where NOT match(query,"(\\.googleapis\\.com|\\.gstatic\\.com|\\.google\\.com)$")
+  AND NOT match(query,"(\\.cloudfront\\.net|\\.akamai(net)?\\.net|\\.akamaized\\.net)$")
+  AND NOT match(query,"(\\.azureedge\\.net|\\.windows\\.net)$")
+| bin _time span=15m
+| stats dc(answer) as distinct_ips values(answer) as sample_ips min(ttl_num) as min_ttl by _time query
+| where distinct_ips>=12
+
+
+============================================================
+DGA (DOMAIN GENERATION ALGORITHM) DETECTIONS
+============================================================
+
+------------------------------------------------------------
+7) DGA – High NXDOMAIN Rate per Client (10 minutes)
+------------------------------------------------------------
+index=dns* (reply_code=NXDOMAIN OR response_code=3)
+| where len(query)>=12
+| bin _time span=10m
+| stats dc(query) as unique_nxdomain count as nxdomain_events by _time src
+| where unique_nxdomain>=50
+
+
+------------------------------------------------------------
+8) DGA – Many Unique Domains with NXDOMAIN (30 minutes)
+------------------------------------------------------------
+index=dns* (reply_code=NXDOMAIN OR response_code=3)
+| where match(query,"^[a-z0-9\\-]{3,}(\\.[a-z0-9\\-]{2,})+\\.[a-z]{2,}$")
+| bin _time span=30m
+| stats dc(query) as unique_nxdomain count as nxdomain_events by _time src
+| where unique_nxdomain>=200
+
+
+------------------------------------------------------------
+9) DGA – “Gibberish” Domain Heuristic + NXDOMAIN
+------------------------------------------------------------
+index=dns* (reply_code=NXDOMAIN OR response_code=3)
+| where match(query,"(^|\\.)[a-z0-9]{16,}\\.[a-z]{2,}$")
+   OR match(query,"(^|\\.)[a-z]*[0-9]{6,}[a-z0-9]*\\.[a-z]{2,}$")
+   OR match(query,"(^|\\.)[bcdfghjklmnpqrstvwxyz]{10,}\\.[a-z]{2,}$")
+| bin _time span=1h
+| stats dc(query) as unique_suspicious_domains count as events by _time src
+| where unique_suspicious_domains>=30
+
+
+------------------------------------------------------------
+10) DGA – Wordlist-Based (High NXDOMAIN Volume, No Gibberish)
+------------------------------------------------------------
+index=dns* (reply_code=NXDOMAIN OR response_code=3)
+| where NOT match(query,"(\\.local|\\.lan)$")
+| bin _time span=2h
+| stats dc(query) as unique_nxdomain count as nxdomain_events by _time src
+| where unique_nxdomain>=600
+
+
+============================================================
+END OF FILE
+============================================================
